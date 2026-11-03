@@ -46,7 +46,7 @@ export function Menu({ open, onClose, onAdmin }: { open: boolean; onClose: () =>
         </span>
         <div className="flex-1">
           <p className="font-bold">{me.name}</p>
-          <p className="muted text-sm">{me.isAdmin ? 'Admin mode on this device' : 'Resident'}</p>
+          <p className="muted text-sm">Room {me.room} · {me.isAdmin ? 'Admin mode on this device' : 'Resident'}</p>
         </div>
       </div>
 
@@ -146,7 +146,7 @@ export function Menu({ open, onClose, onAdmin }: { open: boolean; onClose: () =>
         </div>
       </div>
       <p className="muted px-1 text-xs">
-        SudsQueue stores your name, symbol, laundry activity and board notes for this dorm. Notes are removed after 2 days, the activity log after
+        SudsQueue stores your name, room number, symbol, laundry activity and board notes for this dorm. Notes are removed after 2 days, the activity log after
         30 days, and accounts inactive for 60 days are deleted. Build {__BUILD__}.
       </p>
 

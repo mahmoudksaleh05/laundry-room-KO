@@ -1,4 +1,4 @@
-import { adminCommands, userCommands, type MachineType } from '@suds/shared';
+import { EXTEND_MIN, MAX_EXTENDS, adminCommands, userCommands, type MachineType } from '@suds/shared';
 import { z } from 'zod';
 import { setConfig } from '../db';
 import {
@@ -19,7 +19,6 @@ import {
   type Ctx,
   type MachineRow,
 } from './ctx';
-import { hashSecret } from './identity';
 import { isQuiet, validTimeZone } from './quiet';
 
 type In<S extends z.ZodType> = z.output<S>;
@@ -177,10 +176,11 @@ const user: { [K in keyof U]: (c: Ctx, a: Actor, i: In<U[K]>) => unknown } = {
 
   extend(c, a, { machineId, minutes }) {
     const m = mine(c, a, machineId, 'RUNNING');
+    if (m.ext_used + minutes > MAX_EXTENDS * EXTEND_MIN) fail('CAP_REACHED');
     const ends = m.ends_at! + minutes * MIN;
     const total = Math.round((ends - m.started_at!) / MIN);
     if (total > c.s.capMin) fail('CAP_REACHED');
-    const over = total > (m.est_min ?? 0) + 15 && !m.overrun_noticed;
+    const over = total > (m.est_min ?? 0) + EXTEND_MIN && !m.overrun_noticed;
     setMachine(c, m.id, { ends_at: ends, ext_used: m.ext_used + minutes, overrun_noticed: over ? 1 : m.overrun_noticed }, false);
     if (over) sys(c, `${userName(c, a.userId)} extended ${m.label} to ${total} min (estimate was ${m.est_min}).`);
     log(c, 'extend', a.userId, m.id, { minutes });
@@ -313,11 +313,6 @@ const admin: { [K in keyof A]: (c: Ctx, a: Actor, i: In<A[K]>) => unknown } = {
     log(c, minutes ? 'admin_mute' : 'admin_unmute', a.userId, null, { userId, minutes });
   },
 
-  rotateCode(c, a, { code }) {
-    setConfig(c.db, 'dorm_code', JSON.stringify(hashSecret(code.toUpperCase())));
-    log(c, 'admin_rotate_code', a.userId);
-  },
-
   setSettings(c, a, input) {
     if (!validTimeZone(input.tz)) fail('INVALID_INPUT');
     c.s = { ...c.s, ...input };
@@ -381,7 +376,7 @@ const admin: { [K in keyof A]: (c: Ctx, a: Actor, i: In<A[K]>) => unknown } = {
 
   listUsers(c) {
     return c.db
-      .prepare('SELECT id, name, emoji, muted_until AS mutedUntil, last_active AS lastActive FROM users ORDER BY name_lower')
+      .prepare('SELECT id, name, emoji, room, muted_until AS mutedUntil, last_active AS lastActive FROM users ORDER BY room, name_lower')
       .all();
   },
 

@@ -4,7 +4,7 @@ import { isQuiet } from './quiet';
 
 export function buildSnapshot(c: Ctx, demo: boolean): Snapshot {
   const users = new Map(
-    (c.db.prepare('SELECT id, name, emoji FROM users').all() as { id: number; name: string; emoji: string }[]).map((u) => [u.id, u]),
+    (c.db.prepare('SELECT id, name, emoji, room FROM users').all() as unknown as { id: number; name: string; emoji: string; room: string }[]).map((u) => [u.id, u]),
   );
   const conf = c.db
     .prepare('SELECT machine_id, user_id FROM confirmations WHERE created_at > ?')
@@ -46,6 +46,7 @@ export function buildSnapshot(c: Ctx, demo: boolean): Snapshot {
       userId: q.user_id,
       name: u?.name ?? '?',
       emoji: u?.emoji ?? '🧺',
+      room: u?.room ?? '',
       estMin: q.est_min,
       status: q.status,
       missed: q.missed_count,
@@ -69,7 +70,7 @@ export function buildSnapshot(c: Ctx, demo: boolean): Snapshot {
 export function chatList(c: Ctx): ChatMessage[] {
   const rows = c.db
     .prepare(
-      `SELECT m.id, m.kind, m.text, m.created_at, m.pinned_until, m.reports, u.id AS uid, u.name, u.emoji
+      `SELECT m.id, m.kind, m.text, m.created_at, m.pinned_until, m.reports, u.id AS uid, u.name, u.emoji, u.room
        FROM messages m LEFT JOIN users u ON u.id = m.user_id
        WHERE m.deleted = 0 AND m.created_at > ?
        ORDER BY m.id DESC LIMIT 200`,
@@ -84,26 +85,28 @@ export function chatList(c: Ctx): ChatMessage[] {
     uid: number | null;
     name: string | null;
     emoji: string | null;
+    room: string | null;
   }[];
   return rows.reverse().map((r) => ({
     id: r.id,
     kind: r.kind,
     text: r.text,
     at: r.created_at,
-    user: r.uid != null ? { id: r.uid, name: r.name!, emoji: r.emoji! } : null,
+    user: r.uid != null ? { id: r.uid, name: r.name!, emoji: r.emoji!, room: r.room! } : null,
     pinnedUntil: r.pinned_until && r.pinned_until > c.now ? r.pinned_until : null,
     reports: r.reports,
   }));
 }
 
 export function meOf(c: Ctx, a: Actor): Me {
-  const u = c.db.prepare('SELECT id, name, emoji, muted_until FROM users WHERE id = ?').get(a.userId) as {
+  const u = c.db.prepare('SELECT id, name, emoji, room, muted_until FROM users WHERE id = ?').get(a.userId) as {
     id: number;
     name: string;
     emoji: string;
+    room: string;
     muted_until: number | null;
   };
-  return { id: u.id, name: u.name, emoji: u.emoji, isAdmin: a.isAdmin, mutedUntil: u.muted_until };
+  return { id: u.id, name: u.name, emoji: u.emoji, room: u.room, isAdmin: a.isAdmin, mutedUntil: u.muted_until };
 }
 
 /** Retention: chat 200 msgs / 48 h, audit 30 days, short-lived bookkeeping. */

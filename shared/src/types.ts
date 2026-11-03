@@ -15,6 +15,8 @@ export interface PublicUser {
   id: number;
   name: string;
   emoji: string;
+  /** 3-digit room number */
+  room: string;
 }
 
 export interface MachineView {
@@ -41,6 +43,7 @@ export interface QueueEntry {
   userId: number;
   name: string;
   emoji: string;
+  room: string;
   estMin: number;
   status: 'waiting' | 'reserved';
   missed: number;
@@ -85,14 +88,9 @@ export interface Me {
   id: number;
   name: string;
   emoji: string;
+  room: string;
   isAdmin: boolean;
   mutedUntil: number | null;
-}
-
-export interface Hello {
-  me: Me;
-  serverNow: number;
-  vapidPublicKey: string;
 }
 
 export type Ack<T = unknown> =

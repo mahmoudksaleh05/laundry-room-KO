@@ -7,10 +7,10 @@
     { "type": "dryer", "label": "Dryer 2" },
     { "type": "dryer", "label": "Dryer 3" }
   ],
-  "presets": { "washer": [30, 45, 60], "dryer": [45, 60, 90] },
+  "presets": { "washer": [30, 60, 90], "dryer": [30, 60, 90] },
   "windowMin": 10,
   "snoozeMin": 5,
-  "capMin": 240,
+  "capMin": 120,
   "quietStart": "00:00",
-  "quietEnd": "07:00"
+  "quietEnd": "00:00"
 }

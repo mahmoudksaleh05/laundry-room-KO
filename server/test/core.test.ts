@@ -3,19 +3,21 @@ import type { Ack, MachineView, Snapshot } from '@suds/shared';
 import { openDb, type DB } from '../src/db';
 import { MIN, makeCtx, type Actor } from '../src/core/ctx';
 import { execCommand, transact } from '../src/core/engine';
-import { authenticate, ensureDormCode, hashToken, recover, register } from '../src/core/identity';
+import { authenticate, hashToken, login, register } from '../src/core/identity';
 import { duePushes } from '../src/core/pushes';
 import { isQuiet } from '../src/core/quiet';
 import { buildSnapshot, chatList } from '../src/core/snapshot';
 
-// 2026-10-14 12:00 UTC = 14:00 in Berlin (not quiet hours)
+// 2026-10-14 12:00 UTC = 14:00 in Berlin
 const T0 = Date.UTC(2026, 9, 14, 12, 0);
 let db: DB;
 let now: number;
 const at = (min: number) => (now = T0 + min * MIN);
 
-function user(name: string): Actor {
-  const { result } = transact(db, now, (c) => register(c, { code: 'SOAP', name, emoji: '🫧' }));
+let rooms = 0;
+/** Each test user gets their own room unless one is given. */
+function user(name: string, room = String(101 + rooms++)): Actor {
+  const { result } = transact(db, now, (c) => register(c, { name, room, emoji: '🫧' }));
   return authenticate(db, result.token, now)!;
 }
 function admin(a: Actor): Actor {
@@ -37,7 +39,7 @@ function onlyWasher() {
 
 beforeEach(() => {
   db = openDb(':memory:', 'Europe/Berlin');
-  ensureDormCode(db, 'SOAP');
+  rooms = 0;
   at(0);
 });
 
@@ -240,19 +242,30 @@ describe('running & finishing', () => {
     expect(kinds(pushes())).toContain('done');
   });
 
-  it('extensions are capped at 240 minutes', () => {
+  it('cycles are at most 90 minutes and can be extended twice by 15', () => {
     const ana = user('Ana');
-    cmd(ana, 'startNow', { machineId: 'w1', estMin: 180 });
-    for (let i = 0; i < 6; i++) expect(cmd(ana, 'extend', { machineId: 'w1', minutes: 10 }).ok).toBe(true);
-    expect(cmd(ana, 'extend', { machineId: 'w1', minutes: 5 })).toMatchObject({ code: 'CAP_REACHED' });
+    expect(cmd(ana, 'startNow', { machineId: 'w1', estMin: 91 })).toMatchObject({ code: 'INVALID_INPUT' });
+    cmd(ana, 'startNow', { machineId: 'w1', estMin: 90 });
+    expect(cmd(ana, 'extend', { machineId: 'w1', minutes: 10 })).toMatchObject({ code: 'INVALID_INPUT' });
+    expect(cmd(ana, 'extend', { machineId: 'w1', minutes: 15 }).ok).toBe(true);
+    expect(cmd(ana, 'extend', { machineId: 'w1', minutes: 15 }).ok).toBe(true);
+    expect(cmd(ana, 'extend', { machineId: 'w1', minutes: 15 })).toMatchObject({ code: 'CAP_REACHED' });
+    expect(m('w1')).toMatchObject({ extUsed: 30, endsAt: now + 120 * MIN });
+  });
+
+  it('takes a custom cycle length', () => {
+    const ana = user('Ana');
+    expect(cmd(ana, 'join', { type: 'washer', estMin: 42 }).ok).toBe(true);
+    cmd(ana, 'loaded', { machineId: 'w1' });
+    expect(m('w1').endsAt).toBe(now + 42 * MIN);
   });
 
   it('posts one notice when extensions go 15+ minutes over the estimate', () => {
     const ana = user('Ana');
     cmd(ana, 'startNow', { machineId: 'w1', estMin: 30 });
-    cmd(ana, 'extend', { machineId: 'w1', minutes: 10 });
-    cmd(ana, 'extend', { machineId: 'w1', minutes: 10 });
-    cmd(ana, 'extend', { machineId: 'w1', minutes: 5 });
+    cmd(ana, 'extend', { machineId: 'w1', minutes: 15 });
+    expect(chat().filter((t) => t.includes('extended'))).toHaveLength(0);
+    cmd(ana, 'extend', { machineId: 'w1', minutes: 15 });
     expect(chat().filter((t) => t.includes('extended'))).toHaveLength(1);
   });
 
@@ -323,34 +336,14 @@ describe('quiet hours & daylight saving', () => {
     expect(isQuiet(Date.UTC(2026, 9, 25, 23, 0), berlin)).toBe(true); // 00:00 local
   });
 
-  it('no reservations or pushes in quiet hours; the line resumes in order', () => {
+  it('is open 24/7 by default: a midnight turn is handed out with a push', () => {
     onlyWasher();
-    now = Date.UTC(2026, 9, 13, 21, 50); // 23:50 Berlin
+    now = Date.UTC(2026, 9, 13, 22, 30); // 00:30 Berlin
     const ana = user('Ana');
-    const ben = user('Ben');
-    cmd(ana, 'startNow', { machineId: 'w1', estMin: 30 });
-    cmd(ben, 'join', { type: 'washer', estMin: 30 });
-    now += 40 * MIN; // 00:30 local
-    tick();
-    cmd(ana, 'collect', { machineId: 'w1' });
-    expect(m('w1').state).toBe('FREE');
-    expect(pushes()).toEqual([]);
-    now = Date.UTC(2026, 9, 14, 5, 0); // 07:00 local
-    tick();
-    expect(m('w1')).toMatchObject({ state: 'RESERVED', owner: { name: 'Ben' } });
-  });
-
-  it('a window running into quiet hours expires normally, without the 2-minute push', () => {
-    onlyWasher();
-    now = Date.UTC(2026, 9, 13, 21, 55); // 23:55 local
-    const ana = user('Ana');
+    expect(snap().quiet).toBe(false);
     cmd(ana, 'join', { type: 'washer', estMin: 30 });
+    expect(m('w1')).toMatchObject({ state: 'RESERVED', owner: { name: 'Ana' } });
     expect(kinds(pushes())).toEqual(['turn']);
-    now += 8 * MIN; // 00:03 local, 2 min left
-    expect(pushes()).toEqual([]);
-    now += 3 * MIN;
-    tick();
-    expect(m('w1').state).toBe('FREE'); // missed; no re-reserve during quiet hours
   });
 });
 
@@ -402,22 +395,24 @@ describe('board', () => {
 });
 
 describe('identity', () => {
-  it('names are unique case-insensitively; recovery returns the same user', () => {
-    user('Ana');
-    expect(() => transact(db, now, (c) => register(c, { code: 'SOAP', name: 'ANA', emoji: '🐸' }))).toThrow(
-      'NAME_TAKEN',
-    );
-    const { result } = transact(db, now, (c) => register(c, { code: 'soap', name: 'Ben', emoji: '🐸' }));
-    const again = transact(db, now, (c) => recover(c, { code: 'SOAP', name: 'ben', recoveryCode: result.recoveryCode }));
-    expect(authenticate(db, again.result.token, now)!.userId).toBe(authenticate(db, result.token, now)!.userId);
-    expect(() =>
-      transact(db, now, (c) => recover(c, { code: 'SOAP', name: 'Ana', recoveryCode: 'AAAAAAAA' })),
-    ).toThrow('BAD_CODE');
+  it('logs in with name + room; names are unique per room, case-insensitively', () => {
+    const ana = user('Ana', '214');
+    expect(() => transact(db, now, (c) => register(c, { name: 'ANA', room: '214', emoji: '🐸' }))).toThrow('NAME_TAKEN');
+    user('Ana', '215'); // same name, other room is fine
+    const { result } = transact(db, now, (c) => login(c, { name: 'ana', room: '214' }));
+    expect(authenticate(db, result.token, now)!.userId).toBe(ana.userId);
+    expect(() => transact(db, now, (c) => login(c, { name: 'Ana', room: '216' }))).toThrow('NO_ACCOUNT');
   });
 
-  it('rejects a wrong dorm code and stores only token hashes', () => {
-    expect(() => transact(db, now, (c) => register(c, { code: 'NOPE', name: 'Ana', emoji: '🐸' }))).toThrow('BAD_CODE');
-    const { result } = transact(db, now, (c) => register(c, { code: 'SOAP', name: 'Ana', emoji: '🐸' }));
+  it('allows at most 2 people per room and only floors 1–8', () => {
+    user('Ana', '305');
+    user('Ben', '305');
+    expect(() => transact(db, now, (c) => register(c, { name: 'Cat', room: '305', emoji: '🐸' }))).toThrow('ROOM_FULL');
+    expect(() => transact(db, now, (c) => register(c, { name: 'Dan', room: '905', emoji: '🐸' }))).toThrow();
+  });
+
+  it('stores only token hashes', () => {
+    const { result } = transact(db, now, (c) => register(c, { name: 'Ana', room: '101', emoji: '🐸' }));
     const row = db.prepare('SELECT token_hash FROM devices').get() as { token_hash: string };
     expect(row.token_hash).toBe(hashToken(result.token));
   });

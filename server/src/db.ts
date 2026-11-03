@@ -1,21 +1,22 @@
-import Database from 'better-sqlite3';
-import { readFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import type { Settings } from '@suds/shared';
+import seedFile from '../../config/machines.json' with { type: 'json' };
 
-export type DB = Database.Database;
+export type DB = DatabaseSync;
 
 const SCHEMA = `
 CREATE TABLE users(
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
-  name_lower TEXT NOT NULL UNIQUE,
+  name_lower TEXT NOT NULL,
+  room TEXT NOT NULL CHECK(room GLOB '[1-8][0-9][0-9]'),
   emoji TEXT NOT NULL,
-  recovery_hash TEXT NOT NULL,
-  recovery_salt TEXT NOT NULL,
   muted_until INTEGER,
   created_at INTEGER NOT NULL,
-  last_active INTEGER NOT NULL
+  last_active INTEGER NOT NULL,
+  UNIQUE(room, name_lower)
 );
+CREATE INDEX users_room ON users(room);
 CREATE TABLE devices(
   token_hash TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -107,25 +108,21 @@ interface SeedFile extends Omit<Settings, 'tz' | 'linksAllowed'> {
   machines: { type: 'washer' | 'dryer'; label: string }[];
 }
 
-const seedPath = new URL('../../config/machines.json', import.meta.url);
-
-export function openDb(file: string, tz = 'UTC'): DB {
-  const db = new Database(file);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  db.pragma('busy_timeout = 5000');
-  if (db.pragma('user_version', { simple: true }) === 0) {
-    db.transaction(() => {
-      db.exec(SCHEMA);
-      seed(db, tz);
-      db.pragma('user_version = 1');
-    })();
+export function openDb(file: string, tz = 'Europe/Budapest'): DB {
+  const db = new DatabaseSync(file);
+  db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+  if ((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version === 0) {
+    db.exec('PRAGMA auto_vacuum = FULL'); // keeps the file small as old notes are pruned
+    db.exec('BEGIN');
+    db.exec(SCHEMA);
+    seed(db, tz);
+    db.exec('PRAGMA user_version = 2; COMMIT');
   }
   return db;
 }
 
 function seed(db: DB, tz: string) {
-  const s = JSON.parse(readFileSync(seedPath, 'utf8')) as SeedFile;
+  const s = seedFile as SeedFile;
   const ins = db.prepare('INSERT INTO machines(id, type, label, sort) VALUES (?, ?, ?, ?)');
   const n = { washer: 0, dryer: 0 };
   s.machines.forEach((m, i) => ins.run(`${m.type[0]}${++n[m.type]}`, m.type, m.label, i));

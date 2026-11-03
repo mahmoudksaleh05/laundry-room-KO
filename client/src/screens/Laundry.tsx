@@ -1,4 +1,4 @@
-import { estimateWait, MACHINE_TYPES, type MachineType, type MachineView, type Snapshot } from '@suds/shared';
+import { estimateWait, EXTEND_MIN, MACHINE_TYPES, MAX_EST_MIN, MAX_EXTENDS, type MachineType, type MachineView, type Snapshot } from '@suds/shared';
 import { useState } from 'react';
 import { MachineArt } from '../components/MachineArt';
 import { lcdText, MachineCard } from '../components/MachineCard';
@@ -44,6 +44,7 @@ export function Laundry({ onTurn }: { onTurn: (id: string) => void }) {
                     <span className="n">{i + 1}</span>
                     <span aria-hidden>{e.emoji}</span>
                     {e.userId === me.id ? 'You' : e.name}
+                    <span className="muted num text-xs">{e.room}</span>
                     {e.compensation && <span className="badge">front</span>}
                   </span>
                 ))}
@@ -157,12 +158,52 @@ function MineCard({ m, now, windowMin, onOpen, onTurn }: { m: MachineView; now: 
   );
 }
 
+const validEst = (v: number) => Number.isInteger(v) && v >= 5 && v <= MAX_EST_MIN;
+
+/** 30 / 60 / 90 presets, or any length up to the 90-minute max. */
+function CycleLength({ presets, value, onChange }: { presets: number[]; value: number; onChange: (v: number) => void }) {
+  const [custom, setCustom] = useState(!presets.includes(value));
+  return (
+    <div className="grid gap-3">
+      <Seg
+        label="Cycle length"
+        options={[...presets, 0]}
+        value={custom ? 0 : value}
+        onChange={(v) => {
+          setCustom(v === 0);
+          if (v) onChange(v);
+        }}
+        fmt={(v) => (v ? `${v} min` : 'Custom')}
+      />
+      {custom && (
+        <label className="flex items-center gap-3 font-bold">
+          <input
+            className="input num"
+            style={{ width: '6rem' }}
+            type="number"
+            inputMode="numeric"
+            min={5}
+            max={MAX_EST_MIN}
+            autoFocus
+            value={value || ''}
+            onChange={(e) => onChange(Number(e.target.value))}
+            aria-label="Cycle length in minutes"
+            aria-invalid={!validEst(value)}
+          />
+          minutes{' '}
+          <span className={`text-sm font-medium ${validEst(value) ? 'muted' : 'text-[var(--fin)]'}`}>(5–{MAX_EST_MIN} max)</span>
+        </label>
+      )}
+    </div>
+  );
+}
+
 function JoinSheet({ type, s, onClose }: { type: MachineType | null; s: Snapshot; onClose: () => void }) {
   const presets = type ? s.settings.presets[type] : [45];
   const [est, setEst] = useState<number | null>(null);
-  const value = est && presets.includes(est) ? est : (presets[1] ?? presets[0]);
+  const value = est ?? presets[1] ?? presets[0];
   const join = async () => {
-    if (!type) return;
+    if (!type || !validEst(value)) return;
     const ack = await command('join', { type, estMin: value });
     if (ack.ok) onClose();
   };
@@ -172,8 +213,8 @@ function JoinSheet({ type, s, onClose }: { type: MachineType | null; s: Snapshot
         When a {type ? typeOne[type] : 'machine'} frees up it's held for you for {s.settings.windowMin} minutes. We'll alert you.
       </p>
       <p className="mb-2 font-bold">How long is your cycle?</p>
-      <Seg label="Cycle length" options={presets} value={value} onChange={setEst} fmt={(v) => `${v} min`} />
-      <button className="btn btn-primary btn-lg mt-6" onClick={join}>
+      <CycleLength presets={presets} value={value} onChange={setEst} />
+      <button className="btn btn-primary btn-lg mt-6" disabled={!validEst(value)} onClick={join}>
         Join the line
       </button>
     </Sheet>
@@ -207,7 +248,8 @@ function MachineSheet({
     );
   const mine = m.owner?.id === meId;
   const presets = s.settings.presets[m.type];
-  const value = est && presets.includes(est) ? est : (presets[1] ?? presets[0]);
+  const value = est ?? presets[1] ?? presets[0];
+  const extLeft = MAX_EXTENDS - Math.round(m.extUsed / EXTEND_MIN);
   const waiting = s.queues[m.type].some((e) => e.status === 'waiting');
   const confirmed = m.confirmedBy.includes(meId);
   const run = async (type: Parameters<typeof command>[0], input: object = {}, close = true) => {
@@ -225,8 +267,8 @@ function MachineSheet({
         ) : (
           <>
             <p className="font-bold">Start it now</p>
-            <Seg label="Cycle length" options={presets} value={value} onChange={setEst} fmt={(v) => `${v} min`} />
-            <button className="btn btn-primary btn-lg" onClick={() => run('startNow', { estMin: value })}>
+            <CycleLength presets={presets} value={value} onChange={setEst} />
+            <button className="btn btn-primary btn-lg" disabled={!validEst(value)} onClick={() => run('startNow', { estMin: value })}>
               I've started {m.label}
             </button>
           </>
@@ -244,14 +286,9 @@ function MachineSheet({
     case 'RUNNING':
       actions = mine ? (
         <>
-          <div className="grid grid-cols-2 gap-2">
-            <button className="btn btn-secondary" onClick={() => run('extend', { minutes: 5 }, false)}>
-              +5 min
-            </button>
-            <button className="btn btn-secondary" onClick={() => run('extend', { minutes: 10 }, false)}>
-              +10 min
-            </button>
-          </div>
+          <button className="btn btn-secondary" disabled={extLeft <= 0} onClick={() => run('extend', { minutes: EXTEND_MIN }, false)}>
+            {extLeft > 0 ? `Need more time? +${EXTEND_MIN} min (${extLeft} left)` : 'No extensions left'}
+          </button>
           <button className="btn btn-secondary" onClick={() => run('finishEarly')}>
             It finished early
           </button>

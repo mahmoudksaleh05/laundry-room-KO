@@ -10,9 +10,11 @@ A web app (PWA) for a shared dorm laundry room. Residents join a line for a wash
 | Part | What |
 |---|---|
 | `shared/` | Types, zod command schemas, error text, the wait estimate |
-| `server/` | Node 24, Fastify 5, Socket.io 4, better-sqlite3 (WAL), web-push. Business rules live in `server/src/core` as pure functions with an injected clock |
-| `client/` | React 19, Vite 7, Tailwind 4, motion. A hand-written service worker in `client/public/sw.js` |
-| `config/machines.json` | Seeds the machines (3 washers, 3 dryers) and default timings, **on first boot only**. After that, machines live in the DB and admins manage them in the app |
+| `server/` | Fastify 5 API, `node:sqlite`, web-push. Business rules live in `server/src/core` as pure functions with an injected clock |
+| `client/` | React 19, Vite 7, Tailwind 4, motion, Supabase Realtime. A hand-written service worker in `client/public/sw.js` |
+| `config/machines.json` | Seeds the machines (3 washers, 3 dryers) and default timings, **on first run only**. After that, admins manage machines in the app |
+
+**How it runs on Vercel.** The API is one Vercel function (`server/src/vercel.ts`). The dorm's whole database is a small SQLite file kept as one locked row in Supabase Postgres (`laundry.store`): each request loads it, runs the same tested rules, and saves it back. After every change the API writes the public board to `laundry.state`, and phones get it instantly through Supabase Realtime. A Supabase cron job calls `/api/tick` every minute so held machines expire and alerts go out even when nobody has the app open. Phones also nudge `/api/tick` the moment a timer hits zero.
 
 ## Run it locally
 
@@ -20,13 +22,11 @@ A web app (PWA) for a shared dorm laundry room. Residents join a line for a wash
 npm install
 ```
 
-npm 11 blocks install scripts by default. If `better-sqlite3` fails to load, run `npm approve-scripts better-sqlite3 esbuild && npm rebuild`.
-
 ```bash
 npm run dev
 ```
 
-Open http://localhost:5173. The dorm code is `SUDS` and the admin PIN is `0000`. These dev defaults are refused in production.
+Open http://localhost:5173. Log in with any name and a room number such as `304`. The admin PIN is `0000`. Without `DATABASE_URL` the API uses a local SQLite file and the app polls every 3 seconds instead of using Realtime.
 
 To try timers without waiting, start with `DEMO=1 npm run dev`. Then go to Menu → Enter PIN → Admin tools → **Demo** and move the clock forward.
 
@@ -39,66 +39,55 @@ npm run typecheck
 ```
 
 ```bash
-npm run icons
+npm run vercel-build
 ```
 
-`npm test` runs 36 tests on the queue engine: reservations, misses, quiet hours, DST, confirmations and pushes. `npm run icons` regenerates the PNG icons with no dependencies.
+`npm test` runs 37 tests on the queue engine and login rules. `npm run vercel-build` produces the exact output Vercel deploys, in `.vercel/output`.
 
 ## Environment
 
-See [.env.example](.env.example). The server reads real environment variables; there is no dotenv. Production (`NODE_ENV=production`) requires:
+See [.env.example](.env.example). Production (`NODE_ENV=production`, which Vercel sets) requires `DATABASE_URL`, `ADMIN_PIN`, `CRON_SECRET` and `VAPID_SUBJECT`. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` for live updates.
 
-| Var | Purpose |
-|---|---|
-| `DORM_CODE` | Residents type it once to sign up. Admins can change it in the app |
-| `ADMIN_PIN` | Turns on admin mode on one device for 8 hours. Use 6 or more digits |
-| `VAPID_SUBJECT` | `mailto:` contact for push services |
-| `TZ_NAME` | Dorm time zone for quiet hours, e.g. `Europe/Berlin`. Defaults to `UTC` |
+If `VAPID_PUBLIC` and `VAPID_PRIVATE` are not set, keys are generated on first run and stored in the database.
 
-If `VAPID_PUBLIC` and `VAPID_PRIVATE` are not set, keys are generated on first boot and stored in the DB. Keep the volume, or every device has to turn alerts on again.
+## Deploy (Vercel + Supabase, both free)
 
-## Deploy (Fly.io)
+1. **Supabase.** In a project, open the SQL editor and run [supabase/laundry.sql](supabase/laundry.sql). First replace `YOUR-APP.vercel.app` and `YOUR-CRON-SECRET` at the bottom (you can rerun it after step 3 once you know the URL). It only creates a `laundry` schema, so it can share a project with other apps.
+2. **Vercel.** Import the GitHub repo (Framework preset: Other). `vercel.json` already sets the build command. Add the environment variables from `.env.example`. For `DATABASE_URL` use Supabase → **Connect** → *Transaction pooler* URI.
+3. Deploy, then rerun the cron part of `laundry.sql` with your real `https://….vercel.app` URL and secret.
+4. Open the site, log in, and test Menu → **Test this device**.
 
-Run as one always-on machine with a 1 GB volume. SQLite allows one writer, and timers and pushes run inside the process, so never scale to two machines.
-
-```bash
-fly launch --no-deploy --copy-config
-```
-
-```bash
-fly volumes create suds_data --size 1
-```
-
-```bash
-fly secrets set DORM_CODE=… ADMIN_PIN=… VAPID_SUBJECT=mailto:you@example.com
-```
-
-```bash
-fly deploy
-```
-
-HTTPS is required: service workers and push only work on `https://` or `localhost`. Fly provides HTTPS. A daily `VACUUM INTO` backup goes to `/data/backups`, and the last 7 are kept.
+HTTPS is required for install and alerts, and Vercel provides it. A daily copy of the database is kept in `laundry.backups` (last 7 days).
 
 ## Telling residents how to install it
 
 - **iPhone (iOS 16.4+):** open the link in Safari → Share → **Add to Home Screen** → open SudsQueue from the Home Screen → Menu → Alerts → Turn on. iOS only allows alerts for installed web apps.
-- **Android:** open in Chrome → **Install app** (or ⋮ → Add to Home screen) → allow notifications when asked.
+- **Android:** open in Chrome → tap **Install the app** (or ⋮ → Install app) → allow notifications when asked.
 - **Everyone:** Menu → **Test this device** checks the connection, sound, vibration and a real push.
 
 ## How the line works
 
-- When a machine frees up, the next person gets it **held for 10 minutes** (admins can change this), with one 5-minute snooze.
+- Open 24/7. There are no quiet hours.
+- When you join a line or start a free machine you choose **30, 60 or 90 minutes**, or a custom length up to **90 minutes**.
+- A running cycle can be extended **twice, by 15 minutes each**.
+- When a machine frees up, the next person gets it **held for 10 minutes**, with one 5-minute snooze.
 - If you miss your turn, you go to the back of the line with a 5-minute cooldown. Missing twice drops you from the line and pauses joining for 30 minutes.
 - "It's not empty" or "Out of order" puts the person it was held for at the front of the line.
 - Forgotten laundry: the owner is reminded 10 minutes after the cycle ends, and 5 minutes after that **two different people on two different devices** can confirm the clothes were moved out.
-- During quiet hours (00:00–07:00 by default) the line pauses and no alerts are sent. Free machines are first come, first served.
+- All times are shown in Budapest time (24-hour), synced to the server clock.
+
+## Logging in
+
+- You log in with **your name and your 3-digit room number**. The first digit is the floor (1–8), so rooms run 100–899.
+- At most **2 people per room**. Names are unique within a room, not case-sensitive.
+- The first time, you also pick a symbol. After that, the same name and room log you in on any device.
+- There is no password. Anyone who knows your name and room can log in as you. That is fine for a laundry line, but don't reuse this for anything sensitive.
 
 ## Assumptions
 
-- One dorm per deployment, with a few dozen residents.
-- Residents are identified by a device token. The recovery code (shown once) restores an account on a new device. Nothing else is collected.
+- One dorm per deployment, with up to a few hundred residents.
 - Machines are not connected to the app. Residents report what they do, and the two-person confirmations cover the rest.
 
 ## Privacy (EU/GDPR notes)
 
-The app stores a chosen display name and symbol, laundry activity and board notes. It sets no tracking and loads no third-party requests; fonts are self-hosted. Board notes are deleted after 48 hours, the activity log after 30 days, and accounts inactive for 60 days are removed. Menu → **Delete my data** removes an account immediately. Whoever runs the instance is the data controller and should post a short notice in the laundry room.
+The app stores a display name, room number and symbol, laundry activity and board notes. Data is held in your Supabase project (pick an EU region) and the app runs on Vercel. The public board (names, rooms, machines, notes) can be read with the site's public Supabase key, so treat it as visible to anyone who has the link. Board notes are deleted after 48 hours, the activity log after 30 days, and accounts inactive for 60 days are removed. Menu → **Delete my data** removes an account immediately. Whoever runs the instance is the data controller and should post a short notice in the laundry room.

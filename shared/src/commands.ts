@@ -2,7 +2,13 @@ import { z } from 'zod';
 
 const type = z.enum(['washer', 'dryer']);
 const machineId = z.string().min(1).max(32);
-const estMin = z.number().int().min(15).max(180);
+/** Cycle length: presets 30/60/90 or a custom value, never over 90. */
+export const MAX_EST_MIN = 90;
+export const EXTEND_MIN = 15;
+export const MAX_EXTENDS = 2;
+const estMin = z.number().int().min(5).max(MAX_EST_MIN);
+/** 3-digit room: floor 1–8, then the room on that floor. */
+export const room = z.string().trim().regex(/^[1-8]\d\d$/, 'room number like 214');
 const m = z.object({ machineId });
 
 export const name = z
@@ -23,7 +29,7 @@ export const userCommands = {
   snooze: m,
   giveUp: m,
   notEmpty: m,
-  extend: z.object({ machineId, minutes: z.union([z.literal(5), z.literal(10)]) }),
+  extend: z.object({ machineId, minutes: z.literal(EXTEND_MIN) }),
   finishEarly: m,
   collect: m,
   confirmOut: m,
@@ -42,7 +48,6 @@ export const adminCommands = {
   deleteMessage: z.object({ messageId: z.number().int() }),
   unpin: z.object({ messageId: z.number().int() }),
   mute: z.object({ userId: z.number().int(), minutes: z.number().int().min(0).max(60 * 24 * 30) }),
-  rotateCode: z.object({ code: z.string().trim().min(4).max(32) }),
   setSettings: z.object({
     quietStart: hhmm,
     quietEnd: hhmm,
@@ -71,9 +76,5 @@ export type CommandInput<K extends CommandName> = K extends UserCommand
     ? z.input<(typeof adminCommands)[K]>
     : never;
 
-export const registerBody = z.object({ code: z.string().trim().min(1).max(32), name, emoji });
-export const recoverBody = z.object({
-  code: z.string().trim().min(1).max(32),
-  name,
-  recoveryCode: z.string().trim().min(8).max(12),
-});
+export const loginBody = z.object({ name, room });
+export const registerBody = z.object({ name, room, emoji });

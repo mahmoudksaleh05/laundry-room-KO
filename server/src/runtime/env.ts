@@ -1,6 +1,4 @@
-import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const prod = process.env.NODE_ENV === 'production';
 
@@ -11,20 +9,18 @@ function need(name: string, devDefault: string): string {
   return devDefault;
 }
 
-const dataDir = resolve(process.env.DATA_DIR ?? './data');
-mkdirSync(dataDir, { recursive: true });
-
 export const env = {
   prod,
   port: Number(process.env.API_PORT ?? process.env.PORT ?? 3000),
-  dataDir,
-  dbFile: resolve(dataDir, 'sudsqueue.db'),
-  dormCode: need('DORM_CODE', 'SUDS'),
+  /** Postgres (Supabase) connection string. Unset = local SQLite file in DATA_DIR. */
+  databaseUrl: process.env.DATABASE_URL,
+  dbFile: resolve(process.env.DATA_DIR ?? './data', 'sudsqueue.db'),
   adminPin: need('ADMIN_PIN', '0000'),
-  tz: process.env.TZ_NAME ?? 'UTC',
+  /** Shared secret the every-minute cron sends to /api/tick. */
+  cronSecret: need('CRON_SECRET', 'dev-cron'),
+  tz: process.env.TZ_NAME ?? 'Europe/Budapest',
   vapidPublic: process.env.VAPID_PUBLIC,
   vapidPrivate: process.env.VAPID_PRIVATE,
   vapidSubject: need('VAPID_SUBJECT', 'mailto:dev@sudsqueue.test'),
   demo: process.env.DEMO === '1',
-  clientDist: process.env.CLIENT_DIST ?? fileURLToPath(new URL('../../../client/dist', import.meta.url)),
 };

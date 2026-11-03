@@ -7,9 +7,10 @@ export const mmss = (ms: number) => {
 
 export const mins = (ms: number) => Math.max(0, Math.ceil(ms / 60_000));
 
-/** Clock time in the dorm's time zone. */
-export const hm = (t: number, tz?: string) =>
-  new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', timeZone: tz }).format(t);
+/** The dorm is in Hungary: every clock time on screen is Budapest time, 24-hour. */
+export const DORM_TZ = 'Europe/Budapest';
+export const hm = (t: number, tz = DORM_TZ) =>
+  new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: tz }).format(t);
 
 export const ago = (ms: number) => {
   const m = Math.floor(ms / 60_000);

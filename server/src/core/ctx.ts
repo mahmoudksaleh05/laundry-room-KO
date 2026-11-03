@@ -74,7 +74,7 @@ export const fail = (code: ErrorCode, retryAfterMs?: number): never => {
 export function activeMachines(c: Ctx): MachineRow[] {
   return c.db
     .prepare('SELECT * FROM machines WHERE retired_at IS NULL ORDER BY type DESC, sort, id')
-    .all() as MachineRow[];
+    .all() as unknown as MachineRow[];
 }
 
 export function machine(c: Ctx, id: string): MachineRow {

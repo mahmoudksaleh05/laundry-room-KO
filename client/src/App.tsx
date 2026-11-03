@@ -4,7 +4,8 @@ import { TurnModal } from './components/TurnModal';
 import { BubbleField, Sock, Toasts } from './components/ui';
 import { enablePush, pushState, reRegisterPush } from './lib/push';
 import { prefs } from './lib/storage';
-import { useStore } from './lib/store';
+import { useNow, useStore } from './lib/store';
+import { hm } from './lib/format';
 import { Admin } from './screens/Admin';
 import { Board } from './screens/Board';
 import { Laundry } from './screens/Laundry';
@@ -90,6 +91,7 @@ function Main() {
           <span className="display brand flex-1">
             <span aria-hidden>🫧</span> SudsQueue
           </span>
+          <BudapestClock />
           <span className={`live${status === 'live' ? '' : ' off'}`}>
             <i /> {status === 'live' ? 'Live' : 'Reconnecting'}
           </span>
@@ -135,5 +137,15 @@ function Main() {
       <Menu open={menu} onClose={() => setMenu(false)} onAdmin={() => setAdmin(true)} />
       <Admin open={admin && me.isAdmin} onClose={() => setAdmin(false)} />
     </>
+  );
+}
+
+/** Server-synced clock, Budapest time. */
+function BudapestClock() {
+  const now = useNow();
+  return (
+    <time className="num mr-2 text-sm font-bold" dateTime={new Date(now).toISOString()} title="Budapest time">
+      {hm(now)}
+    </time>
   );
 }

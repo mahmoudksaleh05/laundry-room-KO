@@ -136,7 +136,7 @@ function Queues() {
           {queues[type].map((e, i) => (
             <div key={e.userId} className="list-row">
               <span className="flex-1 font-bold">
-                {i + 1}. {e.emoji} {e.name} <span className="muted text-sm font-medium">· {e.status}{e.missed ? ` · missed ${e.missed}` : ''}</span>
+                {i + 1}. {e.emoji} {e.name} <span className="muted text-sm font-medium">· {e.room} · {e.status}{e.missed ? ` · missed ${e.missed}` : ''}</span>
               </span>
               <button className="btn btn-danger btn-sm" onClick={() => confirm(`Remove ${e.name} from the line?`) && command('removeFromQueue', { userId: e.userId, type })}>
                 Remove
@@ -152,6 +152,7 @@ function Queues() {
 interface UserRow {
   id: number;
   name: string;
+  room: string;
   emoji: string;
   mutedUntil: number | null;
   lastActive: number | null;
@@ -175,7 +176,7 @@ function Users() {
           <div key={u.id} className="list-row">
             <div className="flex-1">
               <p className="font-bold">
-                {u.emoji} {u.name}
+                {u.emoji} {u.name} <span className="muted num text-sm font-medium">· room {u.room}</span>
               </p>
               <p className="muted text-xs">
                 {muted ? `Muted until ${hm(u.mutedUntil!)}` : u.lastActive ? `Active ${ago(now - u.lastActive)} ago` : 'Never active'}
@@ -205,7 +206,6 @@ function Users() {
 function SettingsTab() {
   const s = useStore((x) => x.snap?.settings);
   const [f, setF] = useState(() => (s ? { quietStart: s.quietStart, quietEnd: s.quietEnd, tz: s.tz, linksAllowed: s.linksAllowed, windowMin: s.windowMin } : null));
-  const [code, setCode] = useState('');
   if (!f) return null;
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -214,20 +214,6 @@ function SettingsTab() {
   return (
     <div className="grid gap-4">
       <form className="card grid gap-4 p-4" onSubmit={save}>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="grid gap-1 font-bold">
-            Quiet from
-            <input type="time" className="input" value={f.quietStart} onChange={(e) => setF({ ...f, quietStart: e.target.value })} />
-          </label>
-          <label className="grid gap-1 font-bold">
-            Quiet until
-            <input type="time" className="input" value={f.quietEnd} onChange={(e) => setF({ ...f, quietEnd: e.target.value })} />
-          </label>
-        </div>
-        <label className="grid gap-1 font-bold">
-          Time zone
-          <input className="input" value={f.tz} onChange={(e) => setF({ ...f, tz: e.target.value })} placeholder="Europe/Berlin" />
-        </label>
         <div className="grid gap-2">
           <span className="font-bold">Minutes to load a held machine</span>
           <Seg label="Hold window" options={[5, 10, 15, 20]} value={f.windowMin} onChange={(v) => setF({ ...f, windowMin: v })} fmt={(v) => `${v} min`} />
@@ -236,24 +222,6 @@ function SettingsTab() {
           <input type="checkbox" checked={f.linksAllowed} onChange={(e) => setF({ ...f, linksAllowed: e.target.checked })} /> Allow links on the board
         </label>
         <button className="btn btn-primary btn-lg">Save settings</button>
-      </form>
-      <form
-        className="card grid gap-3 p-4"
-        onSubmit={async (e) => {
-          e.preventDefault();
-          if ((await command('rotateCode', { code })).ok) {
-            toast('Dorm code changed. Existing residents stay signed in.');
-            setCode('');
-          }
-        }}
-      >
-        <label className="grid gap-1 font-bold">
-          New dorm code
-          <input className="input" minLength={4} maxLength={32} value={code} onChange={(e) => setCode(e.target.value)} autoComplete="off" />
-        </label>
-        <button className="btn btn-secondary" disabled={code.trim().length < 4}>
-          Change dorm code
-        </button>
       </form>
     </div>
   );

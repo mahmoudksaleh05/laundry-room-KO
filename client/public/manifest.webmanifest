@@ -2,6 +2,7 @@
   "name": "SudsQueue",
   "short_name": "SudsQueue",
   "description": "The shared laundry room, without the waiting around.",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

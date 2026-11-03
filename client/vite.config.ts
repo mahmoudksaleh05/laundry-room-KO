@@ -11,10 +11,7 @@ export default defineConfig({
     port: 5173,
     // LAN=1 lets phones on the same Wi-Fi open the dev server.
     host: process.env.LAN === '1',
-    proxy: {
-      '/api': 'http://localhost:3000',
-      '/socket.io': { target: 'http://localhost:3000', ws: true },
-    },
+    proxy: { '/api': 'http://localhost:3000' },
   },
   build: { target: 'es2022', sourcemap: false },
 });

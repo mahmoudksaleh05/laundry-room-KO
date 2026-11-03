@@ -1,7 +1,7 @@
-import type { Ack, ChatMessage, CommandName, Hello, Me, Snapshot } from '@suds/shared';
+import type { Ack, ChatMessage, CommandName, Me, Snapshot } from '@suds/shared';
 import { errorText } from '@suds/shared';
 import { useSyncExternalStore } from 'react';
-import { io, type Socket } from 'socket.io-client';
+import { createClient, type RealtimeChannel } from '@supabase/supabase-js';
 import { loadToken, saveToken } from './storage';
 
 export type Status = 'boot' | 'signed-out' | 'connecting' | 'live' | 'offline';
@@ -78,100 +78,25 @@ export function toast(text: string) {
 }
 
 // --- connection ---------------------------------------------------------------
-let socket: Socket | null = null;
+// Commands go over HTTP. Board changes arrive via Supabase Realtime when configured,
+// otherwise (local dev) by polling.
 
-async function measureOffset() {
-  if (!socket?.connected) return;
-  let best: { rtt: number; offset: number } | null = null;
-  for (let i = 0; i < 3; i++) {
-    const t0 = Date.now();
-    try {
-      const r = (await socket.timeout(4000).emitWithAck('time')) as { serverNow: number };
-      const t1 = Date.now();
-      const rtt = t1 - t0;
-      const offset = r.serverNow + rtt / 2 - t1;
-      if (!best || rtt < best.rtt) best = { rtt, offset };
-    } catch {
-      /* try again next sync */
-    }
-  }
-  if (best) set({ offset: best.offset });
+interface Full {
+  me: Me;
+  snapshot: Snapshot;
+  chat: ChatMessage[];
+  vapidPublicKey: string | null;
+  serverNow: number;
 }
 
-function connect(token: string) {
-  socket?.disconnect();
-  set({ status: 'connecting' });
-  socket = io({ auth: { token }, transports: ['websocket', 'polling'] });
-  socket.on('connect', () => {
-    set({ status: 'live' });
-    void measureOffset();
-  });
-  socket.on('disconnect', () => set({ status: 'offline' }));
-  socket.on('connect_error', (e) => {
-    if (e.message === 'AUTH') signOut();
-    else set({ status: 'offline' });
-  });
-  socket.on('hello', (h: Hello) => set({ me: h.me, vapidKey: h.vapidPublicKey, offset: h.serverNow - Date.now() }));
-  socket.on('me', (me: Me) => set({ me }));
-  socket.on('snapshot', (snap: Snapshot) => set({ snap }));
-  socket.on('chat', (chat: ChatMessage[]) => set({ chat }));
-  socket.on('clock', () => void measureOffset());
-}
+const SUPA_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const SUPA_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+let channel: RealtimeChannel | null = null;
+let pollTimer: number | undefined;
+let deadlineTimer: number | undefined;
+let bestRtt = Infinity;
 
-/** Wake-ups: reconnect, or re-fetch the full state if still connected. */
-function resync() {
-  if (!socket) return;
-  if (!socket.connected) socket.connect();
-  else {
-    socket.emit('sync');
-    void measureOffset();
-  }
-}
-
-export async function boot() {
-  const token = await loadToken();
-  if (!token) return set({ status: 'signed-out' });
-  set({ token });
-  connect(token);
-  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && resync());
-  window.addEventListener('focus', resync);
-  window.addEventListener('online', resync);
-}
-
-export function signIn(token: string) {
-  saveToken(token);
-  set({ token });
-  connect(token);
-}
-
-export function signOut() {
-  socket?.disconnect();
-  socket = null;
-  saveToken(null);
-  set({ status: 'signed-out', token: null, me: null, snap: null, chat: [] });
-}
-
-/** Send a command. Same clientActionId on retry, so a double send is harmless. */
-export async function command<T = unknown>(type: CommandName, input: object = {}, opts: { quiet?: boolean } = {}): Promise<Ack<T>> {
-  if (!socket?.connected) {
-    if (!opts.quiet) toast(errorText('OFFLINE'));
-    return { ok: false, code: 'OFFLINE' };
-  }
-  const msg = { clientActionId: crypto.randomUUID(), type, input };
-  let ack: Ack<T> | undefined;
-  for (let attempt = 0; attempt < 2 && !ack; attempt++) {
-    try {
-      ack = (await socket.timeout(8000).emitWithAck('cmd', msg)) as Ack<T>;
-    } catch {
-      /* timeout: retry once with the same id */
-    }
-  }
-  ack ??= { ok: false, code: 'OFFLINE' };
-  if (!ack.ok && !opts.quiet) toast(errorText(ack.code));
-  return ack;
-}
-
-/** JSON call to the REST endpoints (sign-up, push, admin login). */
+/** JSON call to the API. Returns the server's Ack, or OFFLINE. */
 export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<Ack<T>> {
   try {
     const r = await fetch(path, {
@@ -182,8 +107,123 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
       },
       body: body ? JSON.stringify(body) : undefined,
     });
-    return (await r.json()) as Ack<T>;
+    const ack = (await r.json()) as Ack<T>;
+    if (!ack.ok && ack.code === 'AUTH' && state.token) signOut();
+    return ack;
   } catch {
     return { ok: false, code: 'OFFLINE' };
   }
+}
+
+function applyFull(f: Full, rtt: number) {
+  const patch: Partial<State> = { status: 'live', me: f.me, chat: f.chat, vapidKey: f.vapidPublicKey };
+  applySnap(f.snapshot);
+  // The fastest round trip gives the best clock estimate; re-measure when it was poor.
+  if (rtt <= bestRtt * 1.5 || rtt < 400) {
+    bestRtt = Math.min(bestRtt, rtt);
+    patch.offset = f.serverNow + rtt / 2 - Date.now();
+  }
+  set(patch);
+}
+
+function applySnap(snap: Snapshot) {
+  set({ snap });
+  scheduleDeadlineTick(snap);
+}
+
+/** When a timer on screen hits zero, nudge the server so nobody waits for the next cron minute. */
+function scheduleDeadlineTick(snap: Snapshot) {
+  clearTimeout(deadlineTimer);
+  const now = serverNow();
+  const times = [
+    ...snap.machines.flatMap((m) => [m.reservedUntil, m.endsAt, m.confirmUnlockAt]),
+    ...Object.values(snap.queues).flat().map((q) => q.eligibleAt),
+  ].filter((t): t is number => t != null && t > now);
+  if (!times.length) return;
+  const wait = Math.min(...times) - now + 500 + Math.random() * 2500; // jitter: not every phone at once
+  if (wait > 2 ** 31 - 1) return;
+  deadlineTimer = window.setTimeout(() => void fetch('/api/tick', { method: 'POST' }).catch(() => {}), wait);
+}
+
+async function refresh() {
+  if (!state.token) return;
+  const t0 = Date.now();
+  const ack = await api<Full>('GET', '/api/state');
+  if (ack.ok && ack.data) applyFull(ack.data, Date.now() - t0);
+  else if (!ack.ok && ack.code !== 'AUTH') set({ status: 'offline' });
+}
+
+function listen() {
+  stopListening();
+  if (SUPA_URL && SUPA_KEY) {
+    const supa = createClient(SUPA_URL, SUPA_KEY, { auth: { persistSession: false } });
+    channel = supa
+      .channel('board')
+      .on('postgres_changes', { event: '*', schema: 'laundry', table: 'state', filter: 'id=eq.1' }, (p) => {
+        const row = p.new as { snapshot?: Snapshot; chat?: ChatMessage[] };
+        if (row.snapshot) applySnap(row.snapshot);
+        if (row.chat) set({ chat: row.chat });
+      })
+      .subscribe((s) => {
+        if (s === 'SUBSCRIBED') void refresh(); // catch anything missed while connecting
+        else if (s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') set({ status: 'offline' });
+      });
+    pollTimer = window.setInterval(() => void refresh(), 5 * 60_000); // me/admin flag, clock drift
+  } else {
+    pollTimer = window.setInterval(() => document.visibilityState === 'visible' && void refresh(), 3000);
+  }
+}
+
+function stopListening() {
+  void channel?.unsubscribe();
+  channel = null;
+  clearInterval(pollTimer);
+  clearTimeout(deadlineTimer);
+}
+
+function connect(token: string) {
+  set({ token, status: 'connecting' });
+  bestRtt = Infinity;
+  void refresh();
+  listen();
+}
+
+export async function boot() {
+  const token = await loadToken();
+  if (!token) return set({ status: 'signed-out' });
+  connect(token);
+  const wake = () => document.visibilityState === 'visible' && void refresh();
+  document.addEventListener('visibilitychange', wake);
+  window.addEventListener('focus', wake);
+  window.addEventListener('online', wake);
+}
+
+export function signIn(token: string) {
+  saveToken(token);
+  connect(token);
+}
+
+export function signOut() {
+  stopListening();
+  saveToken(null);
+  set({ status: 'signed-out', token: null, me: null, snap: null, chat: [] });
+}
+
+/** Send a command. Same clientActionId on retry, so a double send is harmless. */
+export async function command<T = unknown>(type: CommandName, input: object = {}, opts: { quiet?: boolean } = {}): Promise<Ack<T>> {
+  const msg = { clientActionId: crypto.randomUUID(), type, input };
+  let ack: Ack<T> = { ok: false, code: 'OFFLINE' };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const t0 = Date.now();
+    const res = await api<{ ack: Ack<T>; state: Full }>('POST', '/api/cmd', msg);
+    if (res.ok) {
+      ack = res.data!.ack;
+      applyFull(res.data!.state, Date.now() - t0);
+      break;
+    }
+    ack = res;
+    if (res.code !== 'OFFLINE') break; // only network failures are worth a retry
+  }
+  if (!ack.ok && !opts.quiet) toast(errorText(ack.code));
+  return ack;
 }
