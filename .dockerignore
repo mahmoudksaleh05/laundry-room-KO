@@ -1,0 +1,10 @@
+node_modules
+**/node_modules
+client/dist
+data
+server/data
+**/*.db*
+.env
+.claude
+*.docx
+sudsqueue.html

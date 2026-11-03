@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sudsqueue",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "env": { "DEMO": "1", "API_PORT": "3000", "LAN": "1" },
+      "port": 5173
+    }
+  ]
+}

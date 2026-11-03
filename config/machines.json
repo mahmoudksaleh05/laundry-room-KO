@@ -1,0 +1,16 @@
+{
+  "machines": [
+    { "type": "washer", "label": "Washer 1" },
+    { "type": "washer", "label": "Washer 2" },
+    { "type": "washer", "label": "Washer 3" },
+    { "type": "dryer", "label": "Dryer 1" },
+    { "type": "dryer", "label": "Dryer 2" },
+    { "type": "dryer", "label": "Dryer 3" }
+  ],
+  "presets": { "washer": [30, 45, 60], "dryer": [45, 60, 90] },
+  "windowMin": 10,
+  "snoozeMin": 5,
+  "capMin": 240,
+  "quietStart": "00:00",
+  "quietEnd": "07:00"
+}
